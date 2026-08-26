@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Project Generated Output & Tracking
+output_msg/
+.processed_ids.txt
+*.eml
+
+# Credentials (if any)
+smtp_config.py
+.env
