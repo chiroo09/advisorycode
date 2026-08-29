@@ -7,6 +7,14 @@ from datetime import datetime
 from email.message import EmailMessage
 import openpyxl
 
+# Ensure UTF-8 console output on all Windows machines to prevent charmap/cp1252 encoding crashes
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Try importing Windows COM for Classic Outlook & Excel Macro Auto-Refresh
 try:
     import win32com.client
@@ -25,16 +33,26 @@ MSG_OUTPUT_DIR = "output_msg"
 TRACKING_FILE = ".processed_ids.txt"
 
 # Automation Schedule: Set to 3 for 3-hour continuous check (0 = run once and exit)
-SCHEDULE_INTERVAL_HOURS = 3
+SCHEDULE_INTERVAL_HOURS = 0
 
 # Macro & Power Query Auto-Refresh before reading (Refreshes real-time SharePoint data)
 ENABLE_EXCEL_AUTO_REFRESH = True
 AUTO_REFRESH_WAIT_SECONDS = 20
 
-# Set to True to send automatically without manual click on production host
+# Safe Testing & Dispatch Controls:
+# - Set AUTO_SEND = False to OPEN the email on screen in Outlook for manual review
+# - Set AUTO_SEND = True to send immediately in the background
 AUTO_SEND = True
 
-# Recipient configuration for the master trigger email
+# Maximum number of alerts to process per cycle (0 = unlimited, processes ALL new alerts found)
+MAX_ALERTS_PER_CYCLE = 0
+
+# ONE-TIME INITIAL BASELINE SEEDING:
+# Set to True if your Excel sheet already has hundreds of old past alerts and you ONLY
+# want to start alerting for NEW alerts added from today onwards (marks all existing as processed without sending emails).
+SEED_ALL_EXISTING = False
+
+# Recipient configuration for advisories and master trigger email
 EMAIL_TO = "tejesh988@outlook.com"
 EMAIL_CC = ""
 # Optional: Specify sender or shared mailbox name (leave empty to use default logged-in Outlook profile)
@@ -138,22 +156,50 @@ def trigger_excel_macro_refresh(file_path):
         print(f"[*] Note: Excel COM refresh skipped or not available on this host ({e}).")
 
 # =============================================================================
-# HEADER BANNER EMBEDDER (TI_BG.png)
+# HEADER BANNER EMBEDDER (TI_BG.png with fallback & CID support)
 # =============================================================================
-def get_header_banner_html():
-    banner_file = "TI_BG.png"
-    if os.path.exists(banner_file):
+def ensure_banner_file():
+    # Check for original image files in the directory
+    possible_names = ["TI_BG.png", "TI_BG.jpg", "TI_BG.jpeg", "header.png", "banner.png", "Capgemini_banner.png"]
+    for fname in possible_names:
+        if os.path.exists(fname):
+            return fname
+            
+    # If missing on another machine, generate a branded banner using Pillow as fallback
+    fallback_file = "TI_BG.png"
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (860, 110), color="#001833")
+        draw = ImageDraw.Draw(img)
+        # Draw gradient/accent bars
+        draw.rectangle([0, 0, 860, 6], fill="#0070AD")
+        draw.rectangle([0, 104, 860, 110], fill="#005A9C")
+        draw.text((25, 20), "Cyber Security Unit", fill="#FFFFFF")
+        draw.text((25, 55), "Threat Intelligence", fill="#7EC8E3")
+        img.save(fallback_file, "PNG")
+        return fallback_file
+    except Exception:
+        return None
+
+def get_header_banner_html(use_cid=False):
+    banner_file = ensure_banner_file()
+    if use_cid and banner_file and os.path.exists(banner_file):
+        return """<div style="width: 100%; text-align: center; background-color: #001833; line-height: 0;">
+            <img src="cid:header_banner" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block; border: 0;" />
+        </div>"""
+        
+    if banner_file and os.path.exists(banner_file):
         try:
             import base64
             with open(banner_file, "rb") as f:
                 b64_data = base64.b64encode(f.read()).decode("utf-8")
             return f"""<div style="width: 100%; text-align: center; background-color: #001833; line-height: 0;">
-                <img src="data:image/png;base64,{b64_data}" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block;" />
+                <img src="data:image/png;base64,{b64_data}" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block; border: 0;" />
             </div>"""
         except Exception:
             pass
             
-    # Clean CSS fallback if image file not found
+    # Clean CSS fallback if image file not available
     return """<div class="header-banner">
         <h1>Cyber Security Unit</h1>
         <h2>Threat Intelligence</h2>
@@ -162,9 +208,9 @@ def get_header_banner_html():
 # =============================================================================
 # HTML EMAIL TEMPLATE BUILDER (MATCHING EXACT CSU ADVISORY & DUAL THREAT METER)
 # =============================================================================
-def build_advisory_html(data):
+def build_advisory_html(data, use_cid=True):
     sev_color, sev_label, threat_score, meter_pos = get_severity_metrics(data["severity"])
-    header_banner_html = get_header_banner_html()
+    header_banner_html = get_header_banner_html(use_cid=use_cid)
     
     impacted_html = format_bullet_list(data["impacted_elements"])
     solution_html = format_bullet_list(data["recommendation"])
@@ -186,164 +232,65 @@ def build_advisory_html(data):
 <html>
 <head>
     <meta charset="utf-8">
-    <style>
-        body {{
-            font-family: Arial, Calibri, sans-serif;
-            font-size: 12px;
-            color: #000000;
-            background-color: #e9ecef;
-            margin: 0;
-            padding: 15px;
-        }}
-        .container {{
-            max-width: 860px;
-            margin: 0 auto;
-            background: #ffffff;
-            border: 2px solid #1F4E79;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }}
-        .header-banner {{
-            background: linear-gradient(135deg, #001833 0%, #003DA5 55%, #001833 100%);
-            color: #ffffff;
-            padding: 18px 24px;
-        }}
-        .header-banner h1 {{
-            margin: 0;
-            font-size: 24px;
-            font-weight: bold;
-            letter-spacing: 0.5px;
-        }}
-        .header-banner h2 {{
-            margin: 3px 0 0 0;
-            font-size: 17px;
-            font-weight: normal;
-            color: #7EC8E3;
-        }}
-        .section-bar {{
-            background-color: #EBF1F5;
-            text-align: center;
-            padding: 8px;
-            border-top: 1px solid #1F4E79;
-            border-bottom: 1px solid #1F4E79;
-        }}
-        .section-bar h3 {{
-            margin: 0;
-            font-size: 15px;
-            color: #1F4E79;
-            font-weight: bold;
-        }}
-        .section-bar p {{
-            margin: 3px 0 0 0;
-            font-size: 12px;
-            color: #222222;
-            font-weight: bold;
-        }}
-        table.advisory-table {{
-            width: 100%;
-            border-collapse: collapse;
-        }}
-        table.advisory-table td {{
-            padding: 8px 12px;
-            border: 1px solid #000000;
-            vertical-align: top;
-            font-size: 12px;
-            line-height: 1.45;
-        }}
-        td.label-col {{
-            width: 22%;
-            background-color: #EBF1F5;
-            color: #1F4E79;
-            font-weight: bold;
-        }}
-        td.data-col {{
-            width: 78%;
-            background-color: #FFFFFF;
-            color: #000000;
-        }}
-        .sev-badge {{
-            font-weight: bold;
-            color: {sev_color};
-            font-size: 13px;
-        }}
-        .yellow-note {{
-            background-color: #FFFF00;
-            border: 1px solid #cccc00;
-            color: #000000;
-            font-weight: bold;
-            font-size: 11px;
-            padding: 4px 8px;
-            margin-top: 8px;
-            display: inline-block;
-        }}
-        .footer-banner {{
-            background-color: #002855;
-            color: #ffffff;
-            text-align: center;
-            padding: 10px 15px;
-            font-size: 10.5px;
-            line-height: 1.5;
-            border-top: 1px solid #1F4E79;
-        }}
-    </style>
 </head>
-<body>
-    <div class="container">
+<body style="font-family: Arial, Calibri, sans-serif; font-size: 12px; color: #000000; background-color: #e9ecef; margin: 0; padding: 15px;">
+    <div style="max-width: 860px; margin: 0 auto; background: #ffffff; border: 2px solid #1F4E79;">
         <!-- Banner Image -->
         {header_banner_html}
 
         <!-- Title Header Bar -->
-        <div class="section-bar">
-            <h3>Information Security Advisory - Alert</h3>
-            <p>Date &amp; Time Issued: {data['date']}</p>
+        <div style="background-color: #EBF1F5; text-align: center; padding: 8px; border-top: 1px solid #1F4E79; border-bottom: 1px solid #1F4E79;">
+            <h3 style="margin: 0; font-size: 15px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">Information Security Advisory - Alert</h3>
+            <p style="margin: 3px 0 0 0; font-size: 12px; color: #222222; font-weight: bold; font-family: Arial, sans-serif;">Date &amp; Time Issued: {data['date']}</p>
         </div>
 
         <!-- Main Metadata Table -->
-        <table class="advisory-table">
+        <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
             <tr>
-                <td class="label-col">Advisory Number</td>
-                <td class="data-col"><b>{data['advisory_no']}</b></td>
+                <td width="22%" bgcolor="#EBF1F5" style="width: 22%; background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Advisory Number</td>
+                <td width="78%" bgcolor="#FFFFFF" style="width: 78%; background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['advisory_no']}</b></td>
             </tr>
             <tr>
-                <td class="label-col">Title</td>
-                <td class="data-col"><b>{data['title']}</b></td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Title</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['title']}</b></td>
             </tr>
             <tr>
-                <td class="label-col">Impacted Elements</td>
-                <td class="data-col">{impacted_html or "Refer to technical analysis."}</td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Impacted Elements</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{impacted_html or "Refer to technical analysis."}</td>
             </tr>
             <tr>
-                <td class="label-col">Summary</td>
-                <td class="data-col">{summary_html}</td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Summary</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{summary_html}</td>
             </tr>
             <tr>
-                <td class="label-col">Severity</td>
-                <td class="data-col">
-                    <span class="sev-badge">{data['severity']}</span>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Severity</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">
+                    <span style="font-weight: bold; color: {sev_color}; font-size: 13px;">{data['severity']}</span>
                     <span style="display: inline-block; width: 32px; height: 7px; background-color: {sev_color}; margin-left: 8px; vertical-align: middle; border-radius: 2px;"></span>
                 </td>
             </tr>
             <tr>
-                <td class="label-col">Impact Type</td>
-                <td class="data-col">{data['attack_type'] or "Arbitrary code execution"}</td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Impact Type</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{data['attack_type'] or "Arbitrary code execution"}</td>
             </tr>
             <tr>
-                <td class="label-col">Impact Analysis</td>
-                <td class="data-col">{impact_html}</td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Impact Analysis</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{impact_html}</td>
             </tr>
             <tr>
-                <td class="label-col">Vendor Solution</td>
-                <td class="data-col">{solution_html or "Apply vendor patches immediately."}</td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Vendor Solution</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{solution_html or "Apply vendor patches immediately."}</td>
             </tr>
         </table>
 
         <!-- Threat Meter Header -->
-        <div class="section-bar">
-            <h3>Threat Meter</h3>
+        <div style="background-color: #EBF1F5; text-align: center; padding: 8px; border-top: 1px solid #1F4E79; border-bottom: 1px solid #1F4E79;">
+            <h3 style="margin: 0; font-size: 15px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">Threat Meter</h3>
         </div>
 
         <!-- DUAL THREAT METERS (VENDOR METER + GSOC METER) -->
         <div style="padding: 16px 10px 10px 10px; background-color: #ffffff; border-left: 1px solid #000; border-right: 1px solid #000;">
-            <table style="width: 100%; border: none; border-collapse: collapse;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="width: 100%; border: none; border-collapse: collapse;">
                 <tr>
                     <!-- Left: Vendor Meter -->
                     <td style="width: 50%; vertical-align: top; text-align: center; border: none; padding: 0 10px;">
@@ -389,7 +336,7 @@ def build_advisory_html(data):
                             <line x1="315" y1="48" x2="315" y2="64" stroke="#000" stroke-width="2" />
                             <text x="315" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">10</text>
                         </svg>
-                        <div style="font-family: Arial; font-weight: bold; font-size: 13px; color: #000; margin-top: 4px;">Vendor Meter</div>
+                        <div style="font-family: Arial, sans-serif; font-weight: bold; font-size: 13px; color: #000; margin-top: 4px;">Vendor Meter</div>
                     </td>
                     
                     <!-- Right: GSOC Meter -->
@@ -436,49 +383,49 @@ def build_advisory_html(data):
                             <line x1="315" y1="48" x2="315" y2="64" stroke="#000" stroke-width="2" />
                             <text x="315" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">10</text>
                         </svg>
-                        <div style="font-family: Arial; font-weight: bold; font-size: 13px; color: #000; margin-top: 4px;">GSOC Meter</div>
+                        <div style="font-family: Arial, sans-serif; font-weight: bold; font-size: 13px; color: #000; margin-top: 4px;">GSOC Meter</div>
                     </td>
                 </tr>
             </table>
         </div>
 
         <!-- GSOC Assessment Section Header -->
-        <div class="section-bar">
-            <h3>GSOC Assessment</h3>
+        <div style="background-color: #EBF1F5; text-align: center; padding: 8px; border-top: 1px solid #1F4E79; border-bottom: 1px solid #1F4E79;">
+            <h3 style="margin: 0; font-size: 15px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">GSOC Assessment</h3>
         </div>
 
         <!-- GSOC Assessment Details Table -->
-        <table class="advisory-table">
+        <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
             <tr>
-                <td class="label-col">Exploitation Probability</td>
-                <td class="data-col"><b>{data['severity']}</b></td>
+                <td width="22%" bgcolor="#EBF1F5" style="width: 22%; background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Exploitation Probability</td>
+                <td width="78%" bgcolor="#FFFFFF" style="width: 78%; background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['severity']}</b></td>
             </tr>
             <tr>
-                <td class="label-col">GSOC Risk Assessment</td>
-                <td class="data-col">
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">GSOC Risk Assessment</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">
                     Successful exploitation of these vulnerabilities could lead to {data['attack_type'] or "system compromise"}. Hence it has been categorized as <b>{data['severity']}</b>. No active exploitation detected so far.
                 </td>
             </tr>
             <tr>
-                <td class="label-col">GSOC Recommendation</td>
-                <td class="data-col">
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">GSOC Recommendation</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">
                     <div>Apply the latest patch released by the vendor.</div>
                     <div style="margin-top: 6px;">{solution_html}</div>
-                    <div class="yellow-note">/* Test changes on non-production systems before applying on production systems */</div>
+                    <div style="background-color: #FFFF00; border: 1px solid #cccc00; color: #000000; font-weight: bold; font-size: 11px; padding: 4px 8px; margin-top: 8px; display: inline-block;">/* Test changes on non-production systems before applying on production systems */</div>
                 </td>
             </tr>
             <tr>
-                <td class="label-col">References</td>
-                <td class="data-col">{ref_html}</td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">References</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{ref_html}</td>
             </tr>
             <tr>
-                <td class="label-col">References CVE's</td>
-                <td class="data-col"><b>{data['cve'] or "N/A"}</b></td>
+                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">References CVE's</td>
+                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['cve'] or "N/A"}</b></td>
             </tr>
         </table>
 
         <!-- Capgemini CSU Footer -->
-        <div class="footer-banner">
+        <div style="background-color: #002855; color: #ffffff; text-align: center; padding: 10px 15px; font-size: 10.5px; line-height: 1.5; border-top: 1px solid #1F4E79; font-family: Arial, sans-serif;">
             <div>The information contained in this message is proprietary and confidential. It is for Capgemini and its customers only.</div>
             <div>Copyright &copy; 2024. All rights reserved by Capgemini.</div>
             <div style="font-style: italic; margin-top: 2px;">Collaborative Business Experience&trade;</div>
@@ -492,33 +439,70 @@ def build_advisory_html(data):
 # OUTLOOK .MSG & TRIGGER EMAIL DISPATCHER
 # =============================================================================
 def create_individual_advisory(outlook, data, output_path):
-    html_content = build_advisory_html(data)
+    subject = f"CSU Threat Intelligence Notification Advisory {data['advisory_no']} - {data['title']} ({data['severity'].upper()})"
+    banner_file = ensure_banner_file()
     
-    # 1. If Classic Outlook COM is available, save via Outlook COM API
+    # Always generate a clean HTML version for universal browser & webmail viewing
+    html_path = output_path.replace(".msg", ".html")
+    html_general = build_advisory_html(data, use_cid=False)
+    with open(html_path, "w", encoding="utf-8") as hf:
+        hf.write(html_general)
+    
+    # 1. If Classic Outlook COM is available, create native Outlook .msg item in Read/Received Mode
     if outlook is not None:
         try:
+            html_content = build_advisory_html(data, use_cid=True)
             mail_item = outlook.CreateItem(0)
-            mail_item.Subject = f"CSU Threat Intelligence Notification Advisory {data['advisory_no']} - {data['title']} ({data['severity'].upper()})"
+            mail_item.Subject = subject
+            mail_item.To = EMAIL_TO
+            if EMAIL_CC:
+                mail_item.CC = EMAIL_CC
+            if EMAIL_SENT_ON_BEHALF:
+                mail_item.SentOnBehalfOfName = EMAIL_SENT_ON_BEHALF
+            
+            # Embed banner image as inline CID attachment for Outlook Desktop
+            if banner_file and os.path.exists(banner_file):
+                abs_banner = os.path.abspath(banner_file)
+                att = mail_item.Attachments.Add(abs_banner, 1, 0, "Header Banner")
+                att.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "header_banner")
+            
             mail_item.HTMLBody = html_content
+            
+            # Set PR_MESSAGE_FLAGS (0x0E070003) = 1 (MSGFLAG_READ)
+            # This turns the unsent draft into a normal 'Received' email with Reply / Reply All buttons
+            try:
+                mail_item.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E070003", 1)
+            except Exception:
+                pass
+                
             abs_path = os.path.abspath(output_path)
             mail_item.SaveAs(abs_path, 3) # 3 = olMSG
             mail_item.Close(1)
             return abs_path
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    [!] Classic Outlook COM notice ({e}), falling back to universal email format.")
     
-    # 2. Universal Outlook .msg package creation
+    # 2. Universal RFC MIME email package (.msg & .eml for New Outlook, Web, and any system)
     msg_path = output_path if output_path.endswith(".msg") else output_path + ".msg"
     adv_email = EmailMessage()
-    adv_email["Subject"] = f"CSU Threat Intelligence Notification Advisory {data['advisory_no']} - {data['title']} ({data['severity'].upper()})"
-    adv_email["From"] = "CSU Threat Intelligence <csu-alerts@capgemini.com>"
+    adv_email["Subject"] = subject
+    adv_email["From"] = EMAIL_SENT_ON_BEHALF or "CSU Threat Intelligence <csu-alerts@capgemini.com>"
     adv_email["To"] = EMAIL_TO
+    if EMAIL_CC:
+        adv_email["Cc"] = EMAIL_CC
+    adv_email["Date"] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000")
     adv_email.set_content(f"CSU Threat Intelligence Advisory {data['advisory_no']}: {data['title']}")
-    adv_email.add_alternative(html_content, subtype="html")
+    adv_email.add_alternative(html_general, subtype="html")
     
     abs_path = os.path.abspath(msg_path)
     with open(abs_path, "wb") as f:
         f.write(adv_email.as_bytes())
+        
+    # Also save .eml version for default Windows Mail / New Outlook
+    eml_path = output_path.replace(".msg", ".eml")
+    with open(eml_path, "wb") as f:
+        f.write(adv_email.as_bytes())
+        
     return abs_path
 
 def send_master_trigger_email(outlook, generated_files):
@@ -633,13 +617,21 @@ def send_master_trigger_email(outlook, generated_files):
         webbrowser.open(os.path.abspath(summary_path))
 
 # =============================================================================
-# CYCLE EXECUTION FLOW (HANDLES 25K+ ROWS EFFICIENTLY)
+# CYCLE EXECUTION FLOW (HANDLES 25K+ ROWS EFFICIENTLY WITH PROGRESS BAR)
 # =============================================================================
+def draw_progress_bar(current, total, bar_length=20):
+    fraction = current / total if total > 0 else 1
+    filled = int(bar_length * fraction)
+    bar = "=" * filled + "." * (bar_length - filled)
+    percent = int(fraction * 100)
+    return f"[{bar}] {percent:>3}%"
+
 def run_cycle():
+    start_time = time.time()
     now_str = datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-    print("\n" + "=" * 60)
-    print(f"  CSU Alert Automation Cycle  [{now_str}]")
-    print("=" * 60)
+    print("\n" + "=" * 65)
+    print(f"  CSU Threat Intelligence Alert Automation Cycle  [{now_str}]")
+    print("=" * 65)
     
     ensure_dir(MSG_OUTPUT_DIR)
     processed_ids = get_processed_ids()
@@ -672,10 +664,11 @@ def run_cycle():
         except Exception:
             outlook = None
 
-    generated_files = []
+    unprocessed_alerts = []
     total_scanned = 0
+    total_alerts_found = 0
     
-    # Fast row iterator
+    # Step 1: Fast scan to identify all new Alert records
     for row in sheet.iter_rows(min_row=2, values_only=True):
         total_scanned += 1
         if not row or len(row) < 2:
@@ -687,6 +680,7 @@ def run_cycle():
         if advisory_type != "alert":
             continue
             
+        total_alerts_found += 1
         row_hash = get_row_hash(row)
         if row_hash in processed_ids:
             continue # Already processed in previous cycle
@@ -696,7 +690,6 @@ def run_cycle():
             continue
             
         advisory_no = safe_str(row[COL_ADVISORY_NO - 1]) or "TI-Alert"
-        print(f"\n[>] Found New Alert: {advisory_no} - {title}")
         
         data = {
             "title": title,
@@ -710,54 +703,89 @@ def run_cycle():
             "reference": safe_str(row[COL_REFERENCE - 1]),
             "impacted_elements": safe_str(row[COL_IMPACTED_ELEMENTS - 1]),
             "attack_type": safe_str(row[COL_ATTACK_TYPE - 1]),
+            "row_hash": row_hash
         }
-        
-        clean_title = "".join(c for c in title if c.isalnum() or c in " _-")[:40].strip()
-        msg_filename = f"{advisory_no}_Alert_{clean_title}.msg"
+        unprocessed_alerts.append(data)
+
+    wb.close()
+    elapsed = time.time() - start_time
+    print(f"[+] Scanned {total_scanned:,} total rows in {elapsed:.2f}s.")
+    print(f"[*] Total 'Alert' rows in tracker: {total_alerts_found} | New unprocessed alerts: {len(unprocessed_alerts)}")
+
+    if not unprocessed_alerts:
+        print("\n[*] All alerts are up-to-date. No new emails to send.")
+        return 0
+
+    # Step 1.5: Handle One-Time Baseline Seeding (Skip old history)
+    if SEED_ALL_EXISTING:
+        print(f"\n[!] SEED MODE ACTIVE: Marking all {len(unprocessed_alerts)} existing alerts as processed...")
+        for data in unprocessed_alerts:
+            mark_as_processed(data["row_hash"])
+        print(f"[+] All {len(unprocessed_alerts)} historical alerts recorded in {TRACKING_FILE}.")
+        print("[*] Baseline seeding complete! Now set SEED_ALL_EXISTING = False to begin live alerting.")
+        return 0
+
+    # Step 1.6: Apply Batch Limit (Prevents attaching 3k files to one email)
+    if MAX_ALERTS_PER_CYCLE > 0 and len(unprocessed_alerts) > MAX_ALERTS_PER_CYCLE:
+        print(f"[*] Batch Limit Active: Processing first {MAX_ALERTS_PER_CYCLE} of {len(unprocessed_alerts)} new alerts.")
+        print(f"    (Remaining {len(unprocessed_alerts) - MAX_ALERTS_PER_CYCLE} alerts will automatically process in subsequent cycles).")
+        unprocessed_alerts = unprocessed_alerts[:MAX_ALERTS_PER_CYCLE]
+
+    # Step 2: Process each new alert with a visual progress bar
+    print(f"\n[*] Processing {len(unprocessed_alerts)} alert advisory package(s):")
+    print("-" * 65)
+    
+    generated_files = []
+    total_to_process = len(unprocessed_alerts)
+    
+    for idx, data in enumerate(unprocessed_alerts, start=1):
+        progress = draw_progress_bar(idx, total_to_process)
+        clean_title = "".join(c for c in data["title"] if c.isalnum() or c in " _-")[:35].strip()
+        msg_filename = f"{data['advisory_no']}_Alert_{clean_title}.msg"
         msg_path = os.path.join(MSG_OUTPUT_DIR, msg_filename)
+        
+        print(f"  {progress} [{idx}/{total_to_process}] Generating: {data['advisory_no']} - {clean_title}...")
         
         try:
             saved_file = create_individual_advisory(outlook, data, msg_path)
-            print(f"    -> Generated Advisory: {saved_file}")
-            
             generated_files.append(saved_file)
-            mark_as_processed(row_hash)
-            processed_ids.add(row_hash)
-            
+            mark_as_processed(data["row_hash"])
+            processed_ids.add(data["row_hash"])
         except Exception as e:
-            print(f"    [!] Error generating advisory for '{title}': {e}")
+            print(f"    [!] Error creating {data['advisory_no']}: {e}")
 
-    wb.close()
-    print(f"[*] Scanned {total_scanned} total rows.")
-
+    # Step 3: Trigger master notification email with all packages attached
     if generated_files:
-        print(f"\n[*] Triggering notification email for {len(generated_files)} new advisory package(s)...")
+        print("-" * 65)
+        print(f"[+] Successfully generated {len(generated_files)} advisory package(s).")
+        print(f"[*] Transmitting master trigger notification email to {EMAIL_TO}...")
         send_master_trigger_email(outlook, generated_files)
         first_file = os.path.abspath(generated_files[0])
-        print(f"[*] Opening preview in your web browser: {first_file}")
+        print(f"[*] Opening preview: {first_file}")
         webbrowser.open(first_file)
-    else:
-        print("\n[*] No new unprocessed 'Alert' records found in Excel.")
 
     return len(generated_files)
 
 def main():
     if SCHEDULE_INTERVAL_HOURS > 0:
-        print(f"[*] Starting continuous automation scheduler (running every {SCHEDULE_INTERVAL_HOURS} hour(s))...")
+        print(f"[*] Starting continuous automation engine (recurring every {SCHEDULE_INTERVAL_HOURS} hour(s))...")
         print("[*] Press Ctrl+C at any time to stop.\n")
         try:
             while True:
                 run_cycle()
                 next_check = datetime.fromtimestamp(time.time() + SCHEDULE_INTERVAL_HOURS * 3600).strftime("%H:%M:%S")
-                print(f"\n[*] Waiting for next check at {next_check} (sleeping {SCHEDULE_INTERVAL_HOURS}h)...")
+                print(f"\n" + "=" * 65)
+                print(f"[*] Cycle finished. Next automated check at: {next_check} (sleeping {SCHEDULE_INTERVAL_HOURS}h)")
+                print(f"[*] Keep this window open or minimized to run continuously.")
+                print("=" * 65 + "\n")
                 time.sleep(SCHEDULE_INTERVAL_HOURS * 3600)
         except KeyboardInterrupt:
             print("\n[*] Automation scheduler stopped by user.")
     else:
         run_cycle()
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 65)
         print("  Automation cycle completed.")
-        print("=" * 60)
+        print("=" * 65)
 
 if __name__ == "__main__":
     main()
