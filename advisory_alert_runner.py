@@ -91,11 +91,36 @@ def mark_as_processed(row_id):
     with open(TRACKING_FILE, "a", encoding="utf-8") as f:
         f.write(f"{row_id}\n")
 
+def format_generated_datetime(date_val=None):
+    """Generates exact timestamp string matching template e.g. Feb 05th 2026, 15:15 (CET)."""
+    now = datetime.now()
+    dt = now
+    if isinstance(date_val, datetime):
+        dt = date_val
+        if dt.hour == 0 and dt.minute == 0:
+            dt = dt.replace(hour=now.hour, minute=now.minute)
+    elif isinstance(date_val, str) and date_val.strip():
+        for fmt in ["%d-%b-%y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%d %b %Y"]:
+            try:
+                parsed = datetime.strptime(date_val.strip(), fmt)
+                dt = parsed.replace(hour=now.hour, minute=now.minute)
+                break
+            except Exception:
+                pass
+
+    day = dt.day
+    if 11 <= (day % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    day_str = f"{day:02d}{suffix}"
+    return dt.strftime(f"%b {day_str} %Y, %H:%M (CET)")
+
 def safe_str(val):
     if val is None:
         return ""
     if isinstance(val, datetime):
-        return val.strftime("%b %dth %Y, %H:%M (CET)")
+        return format_generated_datetime()
     return str(val).strip()
 
 def get_row_hash(row_values):
@@ -108,7 +133,7 @@ def format_bullet_list(text):
     lines = [line.strip("- *• \t\r\n") for line in text.splitlines() if line.strip()]
     if not lines:
         return text
-    items = "".join(f"<li style='margin-bottom: 5px;'>{line}</li>" for line in lines)
+    items = "".join(f"<li style='margin-bottom: 4px;'>{line}</li>" for line in lines)
     return f"<ul style='margin: 0; padding-left: 20px;'>{items}</ul>"
 
 def get_severity_metrics(severity_text):
@@ -122,6 +147,147 @@ def get_severity_metrics(severity_text):
     elif "low" in sev:
         return "#00B050", "Low", 2, 62
     return "#1F4E79", severity_text, 1, 62
+
+# =============================================================================
+# THREAT METERS HD IMAGE GENERATOR (COMPATIBLE WITH ALL OUTLOOK / WEBMAIL CLIENTS)
+# =============================================================================
+def get_pil_font(size, bold=False):
+    try:
+        from PIL import ImageFont
+        font_names = ["arialbd.ttf", "calibrib.ttf", "segoeuib.ttf"] if bold else ["arial.ttf", "calibri.ttf", "segoeui.ttf"]
+        for name in font_names:
+            try:
+                return ImageFont.truetype(name, size)
+            except Exception:
+                pass
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+def hex_to_rgb(hex_str):
+    hex_str = hex_str.lstrip("#")
+    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
+
+def draw_gradient_rect(draw_img, x0, y0, x1, y1, top_hex, bot_hex):
+    r1, g1, b1 = hex_to_rgb(top_hex)
+    r2, g2, b2 = hex_to_rgb(bot_hex)
+    h = max(1, y1 - y0)
+    for y in range(y0, y1):
+        ratio = (y - y0) / float(h)
+        r = int(r1 + (r2 - r1) * ratio)
+        g = int(g1 + (g2 - g1) * ratio)
+        b = int(b1 + (b2 - b1) * ratio)
+        draw_img.line([(x0, y), (x1, y)], fill=(r, g, b))
+
+def generate_threat_meters_image(severity_text="Critical", out_path="threat_meters.png"):
+    """Generates the dual Threat Meter gauge (Vendor Meter + GSOC Meter) matching original template."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+
+    sev = severity_text.lower()
+    if "critical" in sev:
+        score = 10
+    elif "high" in sev:
+        score = 8
+    elif "medium" in sev:
+        score = 5
+    elif "low" in sev:
+        score = 2
+    else:
+        score = 1
+
+    scale = 2
+    img_w, img_h = 780 * scale, 135 * scale
+    img = Image.new("RGB", (img_w, img_h), color="#FFFFFF")
+    draw = ImageDraw.Draw(img)
+
+    f_score = get_pil_font(13 * scale, bold=True)
+    f_seg = get_pil_font(11 * scale, bold=True)
+    f_axis = get_pil_font(12 * scale, bold=True)
+    f_title = get_pil_font(13 * scale, bold=True)
+
+    def draw_meter(ox, is_vendor, score_val):
+        x_1 = ox + 20 * scale
+        x_4 = ox + 104 * scale
+        x_7 = ox + 188 * scale
+        x_9 = ox + 272 * scale
+        x_10 = ox + 350 * scale
+
+        lbl1 = "Not Critical" if is_vendor else "Low"
+        segs = [
+            (x_1, x_4, "#0080D0", "#0055A5", lbl1),
+            (x_4, x_7, "#F39C38", "#D96814", "Medium"),
+            (x_7, x_9, "#D62020", "#A00808", "High"),
+            (x_9, x_10, "#B83088", "#85155E", "Critical"),
+        ]
+
+        y_top, y_bot = 32 * scale, 58 * scale
+
+        for (x0, x1, col_top, col_bot, label) in segs:
+            draw_gradient_rect(draw, x0, y_top, x1, y_bot, col_top, col_bot)
+            draw.rectangle([x0, y_top, x1, y_bot], outline="#000000", width=1*scale)
+            
+            if f_seg:
+                bbox = draw.textbbox((0, 0), label, font=f_seg)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                tx = x0 + (x1 - x0 - tw) / 2
+                ty = y_top + (y_bot - y_top - th) / 2 - 1 * scale
+                draw.text((tx, ty), label, fill="#FFFFFF", font=f_seg)
+
+        # Pointer calculation
+        if score_val <= 1:
+            px = x_1
+        elif score_val <= 4:
+            px = x_1 + (score_val - 1) / 3.0 * (x_4 - x_1)
+        elif score_val <= 7:
+            px = x_4 + (score_val - 4) / 3.0 * (x_7 - x_4)
+        elif score_val <= 9:
+            px = x_7 + (score_val - 7) / 2.0 * (x_9 - x_7)
+        else:
+            px = x_9 + min(1.0, (score_val - 9) / 1.0) * (x_10 - x_9)
+
+        # Pointer score text
+        score_str = str(score_val)
+        if f_score:
+            s_bbox = draw.textbbox((0, 0), score_str, font=f_score)
+            stw = s_bbox[2] - s_bbox[0]
+            draw.text((px - stw/2, 6 * scale), score_str, fill="#000000", font=f_score)
+
+        # Pointer triangle
+        tri_pts = [(px - 8 * scale, 19 * scale), (px + 8 * scale, 19 * scale), (px, y_top)]
+        draw.polygon(tri_pts, fill="#D9D9D9", outline="#222222")
+
+        # Axis line
+        axis_y = 66 * scale
+        draw.line([(ox + 6 * scale, axis_y), (ox + 368 * scale, axis_y)], fill="#000000", width=2*scale)
+        # Arrowhead
+        draw.polygon([(ox + 366 * scale, axis_y - 4 * scale), (ox + 376 * scale, axis_y), (ox + 366 * scale, axis_y + 4 * scale)], fill="#000000")
+
+        # Ticks and numbers
+        ticks = [(x_1, "1"), (x_4, "4"), (x_7, "7"), (x_9, "9"), (x_10, "10")]
+        for (tx_pos, num_str) in ticks:
+            draw.line([(tx_pos, axis_y - 8 * scale), (tx_pos, axis_y + 8 * scale)], fill="#000000", width=2*scale)
+            if f_axis:
+                n_bbox = draw.textbbox((0, 0), num_str, font=f_axis)
+                ntw = n_bbox[2] - n_bbox[0]
+                draw.text((tx_pos - ntw/2, axis_y + 11 * scale), num_str, fill="#000000", font=f_axis)
+
+        # Meter title
+        title = "Vendor Meter" if is_vendor else "GSOC Meter"
+        if f_title:
+            t_bbox = draw.textbbox((0, 0), title, font=f_title)
+            ttw = t_bbox[2] - t_bbox[0]
+            draw.text((ox + 185 * scale - ttw/2, 108 * scale), title, fill="#000000", font=f_title)
+
+    draw_meter(10 * scale, is_vendor=True, score_val=score)
+    draw_meter(400 * scale, is_vendor=False, score_val=score)
+
+    final_img = img.resize((780, 135), Image.Resampling.LANCZOS)
+    final_img.save(out_path, "PNG")
+    return out_path
 
 # =============================================================================
 # EXCEL MACRO & POWER QUERY AUTO-REFRESH (WINDOWS COM)
@@ -147,7 +313,6 @@ def trigger_excel_macro_refresh(file_path):
         
         print(f"[*] Waiting {AUTO_REFRESH_WAIT_SECONDS}s for real-time SharePoint synchronization...")
         time.sleep(AUTO_REFRESH_WAIT_SECONDS)
-        
         wb.Save()
         wb.Close()
         excel.Quit()
@@ -159,19 +324,16 @@ def trigger_excel_macro_refresh(file_path):
 # HEADER BANNER EMBEDDER (TI_BG.png with fallback & CID support)
 # =============================================================================
 def ensure_banner_file():
-    # Check for original image files in the directory
     possible_names = ["TI_BG.png", "TI_BG.jpg", "TI_BG.jpeg", "header.png", "banner.png", "Capgemini_banner.png"]
     for fname in possible_names:
         if os.path.exists(fname):
             return fname
             
-    # If missing on another machine, generate a branded banner using Pillow as fallback
     fallback_file = "TI_BG.png"
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
         img = Image.new("RGB", (860, 110), color="#001833")
         draw = ImageDraw.Draw(img)
-        # Draw gradient/accent bars
         draw.rectangle([0, 0, 860, 6], fill="#0070AD")
         draw.rectangle([0, 104, 860, 110], fill="#005A9C")
         draw.text((25, 20), "Cyber Security Unit", fill="#FFFFFF")
@@ -181,37 +343,40 @@ def ensure_banner_file():
     except Exception:
         return None
 
-def get_header_banner_html(use_cid=False):
-    banner_file = ensure_banner_file()
-    if use_cid and banner_file and os.path.exists(banner_file):
-        return """<div style="width: 100%; text-align: center; background-color: #001833; line-height: 0;">
-            <img src="cid:header_banner" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block; border: 0;" />
-        </div>"""
-        
-    if banner_file and os.path.exists(banner_file):
-        try:
-            import base64
-            with open(banner_file, "rb") as f:
-                b64_data = base64.b64encode(f.read()).decode("utf-8")
-            return f"""<div style="width: 100%; text-align: center; background-color: #001833; line-height: 0;">
-                <img src="data:image/png;base64,{b64_data}" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block; border: 0;" />
-            </div>"""
-        except Exception:
-            pass
-            
-    # Clean CSS fallback if image file not available
-    return """<div class="header-banner">
-        <h1>Cyber Security Unit</h1>
-        <h2>Threat Intelligence</h2>
-    </div>"""
-
 # =============================================================================
-# HTML EMAIL TEMPLATE BUILDER (MATCHING EXACT CSU ADVISORY & DUAL THREAT METER)
+# HTML EMAIL TEMPLATE BUILDER (EXACT MATCHING ORIGINAL CSU ADVISORY)
 # =============================================================================
-def build_advisory_html(data, use_cid=True):
-    sev_color, sev_label, threat_score, meter_pos = get_severity_metrics(data["severity"])
-    header_banner_html = get_header_banner_html(use_cid=use_cid)
+def build_advisory_html(data, meter_img_path=None, banner_img_path=None, use_cid=True):
+    sev_color, _, _, _ = get_severity_metrics(data["severity"])
     
+    # Image Source Resolution (CID for Outlook, Base64 for Standalone Browser/Webmail)
+    if use_cid:
+        banner_src = "cid:header_banner"
+        meter_src = "cid:threat_meter"
+    else:
+        banner_src = ""
+        if banner_img_path and os.path.exists(banner_img_path):
+            try:
+                import base64
+                with open(banner_img_path, "rb") as f:
+                    b64_b = base64.b64encode(f.read()).decode("utf-8")
+                banner_src = f"data:image/png;base64,{b64_b}"
+            except Exception:
+                pass
+                
+        meter_src = ""
+        if meter_img_path and os.path.exists(meter_img_path):
+            try:
+                import base64
+                with open(meter_img_path, "rb") as f:
+                    b64_m = base64.b64encode(f.read()).decode("utf-8")
+                meter_src = f"data:image/png;base64,{b64_m}"
+            except Exception:
+                pass
+
+    banner_img_html = f'<img src="{banner_src}" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block; border: 0;" />' if banner_src else '<div style="background-color: #001833; color: #ffffff; padding: 25px; font-size: 20px; font-weight: bold;">Cyber Security Unit - Threat Intelligence</div>'
+    meter_img_html = f'<img src="{meter_src}" alt="Threat Meter" style="width: 100%; max-width: 780px; height: auto; display: block; margin: 0 auto; border: 0;" />' if meter_src else ''
+
     impacted_html = format_bullet_list(data["impacted_elements"])
     solution_html = format_bullet_list(data["recommendation"])
     summary_html = data["summary"].replace("\n", "<br>")
@@ -234,203 +399,117 @@ def build_advisory_html(data, use_cid=True):
     <meta charset="utf-8">
 </head>
 <body style="font-family: Arial, Calibri, sans-serif; font-size: 12px; color: #000000; background-color: #e9ecef; margin: 0; padding: 15px;">
-    <div style="max-width: 860px; margin: 0 auto; background: #ffffff; border: 2px solid #1F4E79;">
+    <table align="center" width="860" cellpadding="0" cellspacing="0" style="max-width: 860px; width: 100%; margin: 0 auto; background-color: #ffffff; border: 1px solid #7F7F7F; border-collapse: collapse; font-family: Arial, Calibri, sans-serif;">
         <!-- Banner Image -->
-        {header_banner_html}
+        <tr>
+            <td colspan="2" style="padding: 0; background-color: #001833; line-height: 0; border-bottom: 1px solid #7F7F7F;">
+                {banner_img_html}
+            </td>
+        </tr>
 
-        <!-- Title Header Bar -->
-        <div style="background-color: #EBF1F5; text-align: center; padding: 8px; border-top: 1px solid #1F4E79; border-bottom: 1px solid #1F4E79;">
-            <h3 style="margin: 0; font-size: 15px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">Information Security Advisory - Alert</h3>
-            <p style="margin: 3px 0 0 0; font-size: 12px; color: #222222; font-weight: bold; font-family: Arial, sans-serif;">Date &amp; Time Issued: {data['date']}</p>
-        </div>
+        <!-- Title Header Row (Merged directly in table to eliminate empty box/gap) -->
+        <tr>
+            <td colspan="2" bgcolor="#EBF1F5" style="background-color: #EBF1F5; text-align: center; padding: 8px 12px; border-bottom: 1px solid #7F7F7F;">
+                <div style="font-size: 14.5px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">Information Security Advisory - Alert</div>
+                <div style="font-size: 11.5px; color: #000000; font-weight: bold; font-family: Arial, sans-serif; margin-top: 3px;">Date &amp; Time Issued: {data['date']}</div>
+            </td>
+        </tr>
 
-        <!-- Main Metadata Table -->
-        <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
-            <tr>
-                <td width="22%" bgcolor="#EBF1F5" style="width: 22%; background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Advisory Number</td>
-                <td width="78%" bgcolor="#FFFFFF" style="width: 78%; background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['advisory_no']}</b></td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Title</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['title']}</b></td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Impacted Elements</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{impacted_html or "Refer to technical analysis."}</td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Summary</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{summary_html}</td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Severity</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">
-                    <span style="font-weight: bold; color: {sev_color}; font-size: 13px;">{data['severity']}</span>
-                    <span style="display: inline-block; width: 32px; height: 7px; background-color: {sev_color}; margin-left: 8px; vertical-align: middle; border-radius: 2px;"></span>
-                </td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Impact Type</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{data['attack_type'] or "Arbitrary code execution"}</td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Impact Analysis</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{impact_html}</td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Vendor Solution</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{solution_html or "Apply vendor patches immediately."}</td>
-            </tr>
-        </table>
+        <!-- Main Metadata Rows (Clean, unbolded values, Arial 12px) -->
+        <tr>
+            <td width="22%" bgcolor="#EBF1F5" style="width: 22%; background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Advisory Number</td>
+            <td width="78%" bgcolor="#FFFFFF" style="width: 78%; background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{data['advisory_no']}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Title</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{data['title']}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Impacted Elements</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{impacted_html or "Refer to technical analysis."}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Summary</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{summary_html}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Severity</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">
+                <span>{data['severity']}</span>
+                <span style="display: inline-block; width: 28px; height: 8px; background-color: {sev_color}; margin-left: 6px; vertical-align: middle; border-radius: 1px;"></span>
+            </td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Impact Type</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{data['attack_type'] or "Arbitrary code execution"}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Impact Analysis</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{impact_html}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Vendor Solution</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{solution_html or "Apply vendor patches immediately."}</td>
+        </tr>
 
-        <!-- Threat Meter Header -->
-        <div style="background-color: #EBF1F5; text-align: center; padding: 8px; border-top: 1px solid #1F4E79; border-bottom: 1px solid #1F4E79;">
-            <h3 style="margin: 0; font-size: 15px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">Threat Meter</h3>
-        </div>
+        <!-- Threat Meter Header Row -->
+        <tr>
+            <td colspan="2" bgcolor="#EBF1F5" style="background-color: #EBF1F5; text-align: center; padding: 6px 12px; border: 1px solid #7F7F7F;">
+                <div style="font-size: 14.5px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">Threat Meter</div>
+            </td>
+        </tr>
 
-        <!-- DUAL THREAT METERS (VENDOR METER + GSOC METER) -->
-        <div style="padding: 16px 10px 10px 10px; background-color: #ffffff; border-left: 1px solid #000; border-right: 1px solid #000;">
-            <table width="100%" cellpadding="0" cellspacing="0" style="width: 100%; border: none; border-collapse: collapse;">
-                <tr>
-                    <!-- Left: Vendor Meter -->
-                    <td style="width: 50%; vertical-align: top; text-align: center; border: none; padding: 0 10px;">
-                        <svg width="340" height="95" viewBox="0 0 340 95" style="display: block; margin: 0 auto;">
-                            <!-- Indicator Top Pointer -->
-                            <text x="{meter_pos}" y="13" font-family="Arial" font-size="11" font-weight="bold" fill="#111" text-anchor="middle">{threat_score}</text>
-                            <polygon points="{meter_pos-6},15 {meter_pos+6},15 {meter_pos},25" fill="#BFBFBF" stroke="#333333" stroke-width="1.5" />
-                            
-                            <!-- Color Blocks -->
-                            <!-- Not Critical (1-4) -->
-                            <rect x="25" y="26" width="75" height="24" fill="#0070C0" stroke="#000000" stroke-width="1.2" />
-                            <text x="62" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">Not Critical</text>
-                            
-                            <!-- Medium (4-7) -->
-                            <rect x="100" y="26" width="75" height="24" fill="#ED7D31" stroke="#000000" stroke-width="1.2" />
-                            <text x="137" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">Medium</text>
-                            
-                            <!-- High (7-9) -->
-                            <rect x="175" y="26" width="75" height="24" fill="#C00000" stroke="#000000" stroke-width="1.2" />
-                            <text x="212" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">High</text>
-                            
-                            <!-- Critical (9-10) -->
-                            <rect x="250" y="26" width="65" height="24" fill="#CC3399" stroke="#000000" stroke-width="1.2" />
-                            <text x="282" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">Critical</text>
-                            
-                            <!-- Base Axis Line -->
-                            <line x1="12" y1="56" x2="330" y2="56" stroke="#000000" stroke-width="2.5" />
-                            <polygon points="326,52 336,56 326,60" fill="#000000" />
-                            
-                            <!-- Axis Ticks & Scale Numbers -->
-                            <line x1="25" y1="48" x2="25" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="25" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">1</text>
-                            
-                            <line x1="100" y1="48" x2="100" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="100" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">4</text>
-                            
-                            <line x1="175" y1="48" x2="175" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="175" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">7</text>
-                            
-                            <line x1="250" y1="48" x2="250" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="250" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">9</text>
-                            
-                            <line x1="315" y1="48" x2="315" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="315" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">10</text>
-                        </svg>
-                        <div style="font-family: Arial, sans-serif; font-weight: bold; font-size: 13px; color: #000; margin-top: 4px;">Vendor Meter</div>
-                    </td>
-                    
-                    <!-- Right: GSOC Meter -->
-                    <td style="width: 50%; vertical-align: top; text-align: center; border: none; padding: 0 10px;">
-                        <svg width="340" height="95" viewBox="0 0 340 95" style="display: block; margin: 0 auto;">
-                            <!-- Indicator Top Pointer -->
-                            <text x="{meter_pos}" y="13" font-family="Arial" font-size="11" font-weight="bold" fill="#111" text-anchor="middle">{threat_score}</text>
-                            <polygon points="{meter_pos-6},15 {meter_pos+6},15 {meter_pos},25" fill="#BFBFBF" stroke="#333333" stroke-width="1.5" />
-                            
-                            <!-- Color Blocks -->
-                            <!-- Low (1-4) -->
-                            <rect x="25" y="26" width="75" height="24" fill="#0070C0" stroke="#000000" stroke-width="1.2" />
-                            <text x="62" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">Low</text>
-                            
-                            <!-- Medium (4-7) -->
-                            <rect x="100" y="26" width="75" height="24" fill="#ED7D31" stroke="#000000" stroke-width="1.2" />
-                            <text x="137" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">Medium</text>
-                            
-                            <!-- High (7-9) -->
-                            <rect x="175" y="26" width="75" height="24" fill="#C00000" stroke="#000000" stroke-width="1.2" />
-                            <text x="212" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">High</text>
-                            
-                            <!-- Critical (9-10) -->
-                            <rect x="250" y="26" width="65" height="24" fill="#CC3399" stroke="#000000" stroke-width="1.2" />
-                            <text x="282" y="42" font-family="Arial" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle">Critical</text>
-                            
-                            <!-- Base Axis Line -->
-                            <line x1="12" y1="56" x2="330" y2="56" stroke="#000000" stroke-width="2.5" />
-                            <polygon points="326,52 336,56 326,60" fill="#000000" />
-                            
-                            <!-- Axis Ticks & Scale Numbers -->
-                            <line x1="25" y1="48" x2="25" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="25" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">1</text>
-                            
-                            <line x1="100" y1="48" x2="100" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="100" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">4</text>
-                            
-                            <line x1="175" y1="48" x2="175" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="175" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">7</text>
-                            
-                            <line x1="250" y1="48" x2="250" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="250" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">9</text>
-                            
-                            <line x1="315" y1="48" x2="315" y2="64" stroke="#000" stroke-width="2" />
-                            <text x="315" y="76" font-family="Arial" font-size="11" font-weight="bold" fill="#000" text-anchor="middle">10</text>
-                        </svg>
-                        <div style="font-family: Arial, sans-serif; font-weight: bold; font-size: 13px; color: #000; margin-top: 4px;">GSOC Meter</div>
-                    </td>
-                </tr>
-            </table>
-        </div>
+        <!-- Threat Meter Gauge Row (Native HD PNG Image) -->
+        <tr>
+            <td colspan="2" bgcolor="#FFFFFF" align="center" style="background-color: #FFFFFF; text-align: center; padding: 14px 10px; border: 1px solid #7F7F7F;">
+                {meter_img_html}
+            </td>
+        </tr>
 
-        <!-- GSOC Assessment Section Header -->
-        <div style="background-color: #EBF1F5; text-align: center; padding: 8px; border-top: 1px solid #1F4E79; border-bottom: 1px solid #1F4E79;">
-            <h3 style="margin: 0; font-size: 15px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">GSOC Assessment</h3>
-        </div>
+        <!-- GSOC Assessment Header Row -->
+        <tr>
+            <td colspan="2" bgcolor="#EBF1F5" style="background-color: #EBF1F5; text-align: center; padding: 6px 12px; border: 1px solid #7F7F7F;">
+                <div style="font-size: 14.5px; color: #1F4E79; font-weight: bold; font-family: Arial, sans-serif;">GSOC Assessment</div>
+            </td>
+        </tr>
 
-        <!-- GSOC Assessment Details Table -->
-        <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
-            <tr>
-                <td width="22%" bgcolor="#EBF1F5" style="width: 22%; background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">Exploitation Probability</td>
-                <td width="78%" bgcolor="#FFFFFF" style="width: 78%; background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['severity']}</b></td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">GSOC Risk Assessment</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">
-                    Successful exploitation of these vulnerabilities could lead to {data['attack_type'] or "system compromise"}. Hence it has been categorized as <b>{data['severity']}</b>. No active exploitation detected so far.
-                </td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">GSOC Recommendation</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">
-                    <div>Apply the latest patch released by the vendor.</div>
-                    <div style="margin-top: 6px;">{solution_html}</div>
-                    <div style="background-color: #FFFF00; border: 1px solid #cccc00; color: #000000; font-weight: bold; font-size: 11px; padding: 4px 8px; margin-top: 8px; display: inline-block;">/* Test changes on non-production systems before applying on production systems */</div>
-                </td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">References</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">{ref_html}</td>
-            </tr>
-            <tr>
-                <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;">References CVE's</td>
-                <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; padding: 8px 12px; border: 1px solid #000000; vertical-align: top;"><b>{data['cve'] or "N/A"}</b></td>
-            </tr>
-        </table>
+        <!-- GSOC Assessment Details -->
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">Exploitation Probability</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{data['severity']}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">GSOC Risk Assessment</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">
+                Successful exploitation of these vulnerabilities could lead to {data['attack_type'] or "Arbitrary code execution"}. Hence it has been categorized as {data['severity']}. No active exploitation detected so far.
+            </td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">GSOC Recommendation</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">
+                <div>Apply the latest patch released by the vendor.</div>
+                <div style="margin-top: 6px;">{solution_html}</div>
+                <div style="background-color: #FFFF00; border: 1px solid #cccc00; color: #000000; font-size: 11px; padding: 3px 6px; margin-top: 8px; display: inline-block;">/* Test changes on non-production systems before applying on production systems */</div>
+            </td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">References</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{ref_html}</td>
+        </tr>
+        <tr>
+            <td bgcolor="#EBF1F5" style="background-color: #EBF1F5; color: #1F4E79; font-weight: bold; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">References CVE's</td>
+            <td bgcolor="#FFFFFF" style="background-color: #FFFFFF; color: #000000; font-size: 12px; padding: 6px 10px; border: 1px solid #7F7F7F; vertical-align: top;">{data['cve'] or "N/A"}</td>
+        </tr>
 
         <!-- Capgemini CSU Footer -->
-        <div style="background-color: #002855; color: #ffffff; text-align: center; padding: 10px 15px; font-size: 10.5px; line-height: 1.5; border-top: 1px solid #1F4E79; font-family: Arial, sans-serif;">
-            <div>The information contained in this message is proprietary and confidential. It is for Capgemini and its customers only.</div>
-            <div>Copyright &copy; 2024. All rights reserved by Capgemini.</div>
-            <div style="font-style: italic; margin-top: 2px;">Collaborative Business Experience&trade;</div>
-        </div>
-    </div>
+        <tr>
+            <td colspan="2" style="background-color: #002855; color: #ffffff; text-align: center; padding: 8px 12px; font-size: 10.5px; line-height: 1.4; border-top: 1px solid #7F7F7F; font-family: Arial, sans-serif;">
+                <div>The information contained in this message is proprietary and confidential. It is for Capgemini and its customers only.</div>
+                <div>Copyright &copy; 2026. All rights reserved by Capgemini.</div>
+                <div style="font-style: italic; margin-top: 2px;">Collaborative Business Experience&trade;</div>
+            </td>
+        </tr>
+    </table>
 </body>
 </html>"""
     return html
@@ -442,16 +521,21 @@ def create_individual_advisory(outlook, data, output_path):
     subject = f"CSU Threat Intelligence Notification Advisory {data['advisory_no']} - {data['title']} ({data['severity'].upper()})"
     banner_file = ensure_banner_file()
     
+    # 1. Generate threat meter PNG for this specific alert severity
+    meter_filename = f"meter_{data['advisory_no']}.png"
+    meter_file_path = os.path.join(MSG_OUTPUT_DIR, meter_filename)
+    generate_threat_meters_image(data["severity"], meter_file_path)
+
     # Always generate a clean HTML version for universal browser & webmail viewing
     html_path = output_path.replace(".msg", ".html")
-    html_general = build_advisory_html(data, use_cid=False)
+    html_general = build_advisory_html(data, meter_img_path=meter_file_path, banner_img_path=banner_file, use_cid=False)
     with open(html_path, "w", encoding="utf-8") as hf:
         hf.write(html_general)
     
     # 1. If Classic Outlook COM is available, create native Outlook .msg item in Read/Received Mode
     if outlook is not None:
         try:
-            html_content = build_advisory_html(data, use_cid=True)
+            html_content = build_advisory_html(data, meter_img_path=meter_file_path, banner_img_path=banner_file, use_cid=True)
             mail_item = outlook.CreateItem(0)
             mail_item.Subject = subject
             mail_item.To = EMAIL_TO
@@ -463,9 +547,15 @@ def create_individual_advisory(outlook, data, output_path):
             # Embed banner image as inline CID attachment for Outlook Desktop
             if banner_file and os.path.exists(banner_file):
                 abs_banner = os.path.abspath(banner_file)
-                att = mail_item.Attachments.Add(abs_banner, 1, 0, "Header Banner")
-                att.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "header_banner")
+                att_b = mail_item.Attachments.Add(abs_banner, 1, 0, "Header Banner")
+                att_b.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "header_banner")
             
+            # Embed threat meter image as inline CID attachment for Outlook Desktop
+            if meter_file_path and os.path.exists(meter_file_path):
+                abs_meter = os.path.abspath(meter_file_path)
+                att_m = mail_item.Attachments.Add(abs_meter, 1, 0, "Threat Meter")
+                att_m.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "threat_meter")
+
             mail_item.HTMLBody = html_content
             
             # Set PR_MESSAGE_FLAGS (0x0E070003) = 1 (MSGFLAG_READ)
@@ -694,7 +784,7 @@ def run_cycle():
         data = {
             "title": title,
             "advisory_no": advisory_no,
-            "date": safe_str(row[COL_DATE - 1]) or datetime.now().strftime("%b %dth %Y, %H:%M (CET)"),
+            "date": format_generated_datetime(row[COL_DATE - 1]),
             "severity": safe_str(row[COL_SEVERITY - 1]) or "Medium",
             "cve": safe_str(row[COL_CVE - 1]),
             "summary": safe_str(row[COL_SUMMARY - 1]),
