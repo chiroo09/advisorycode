@@ -53,8 +53,8 @@ MAX_ALERTS_PER_CYCLE = 0
 SEED_ALL_EXISTING = False
 
 # Recipient configuration for advisories and master trigger email
-EMAIL_TO = "tejesh988@outlook.com"
-EMAIL_CC = ""
+EMAIL_TO = "nagireddy-gari.shinysreeja@capgemini.com"
+EMAIL_CC = "tejesh988@outlook.com"
 # Optional: Specify sender or shared mailbox name (leave empty to use default logged-in Outlook profile)
 EMAIL_SENT_ON_BEHALF = ""
 
@@ -92,29 +92,15 @@ def mark_as_processed(row_id):
         f.write(f"{row_id}\n")
 
 def format_generated_datetime(date_val=None):
-    """Generates exact timestamp string matching template e.g. Feb 05th 2026, 15:15 (CET)."""
+    """Generates exact current timestamp string matching template e.g. Aug 30th 2026, 23:06 (CET)."""
     now = datetime.now()
-    dt = now
-    if isinstance(date_val, datetime):
-        dt = date_val
-        if dt.hour == 0 and dt.minute == 0:
-            dt = dt.replace(hour=now.hour, minute=now.minute)
-    elif isinstance(date_val, str) and date_val.strip():
-        for fmt in ["%d-%b-%y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%d %b %Y"]:
-            try:
-                parsed = datetime.strptime(date_val.strip(), fmt)
-                dt = parsed.replace(hour=now.hour, minute=now.minute)
-                break
-            except Exception:
-                pass
-
-    day = dt.day
+    day = now.day
     if 11 <= (day % 100) <= 13:
         suffix = "th"
     else:
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
     day_str = f"{day:02d}{suffix}"
-    return dt.strftime(f"%b {day_str} %Y, %H:%M (CET)")
+    return now.strftime(f"%b {day_str} %Y, %H:%M (CET)")
 
 def safe_str(val):
     if val is None:
@@ -518,6 +504,7 @@ def build_advisory_html(data, meter_img_path=None, banner_img_path=None, use_cid
 # OUTLOOK .MSG & TRIGGER EMAIL DISPATCHER
 # =============================================================================
 def create_individual_advisory(outlook, data, output_path):
+    import re
     subject = f"CSU Threat Intelligence Notification Advisory {data['advisory_no']} - {data['title']} ({data['severity'].upper()})"
     banner_file = ensure_banner_file()
     
@@ -525,6 +512,20 @@ def create_individual_advisory(outlook, data, output_path):
     meter_filename = f"meter_{data['advisory_no']}.png"
     meter_file_path = os.path.join(MSG_OUTPUT_DIR, meter_filename)
     generate_threat_meters_image(data["severity"], meter_file_path)
+
+    # 2. Extract CVE(s) for Vulnerability.txt attachment
+    cve_content = data.get("cve", "").strip()
+    if not cve_content:
+        found_cves = re.findall(r"CVE-\d{4}-\d+", data.get("impact_analysis", "") + " " + data.get("attack_vector", "") + " " + data.get("title", ""))
+        if found_cves:
+            cve_content = "\n".join(dict.fromkeys(found_cves))
+    
+    vuln_txt_path = None
+    if cve_content:
+        vuln_txt_filename = f"Vulnerability_{data['advisory_no']}.txt"
+        vuln_txt_path = os.path.join(MSG_OUTPUT_DIR, vuln_txt_filename)
+        with open(vuln_txt_path, "w", encoding="utf-8") as vf:
+            vf.write(cve_content + "\n")
 
     # Always generate a clean HTML version for universal browser & webmail viewing
     html_path = output_path.replace(".msg", ".html")
@@ -544,17 +545,38 @@ def create_individual_advisory(outlook, data, output_path):
             if EMAIL_SENT_ON_BEHALF:
                 mail_item.SentOnBehalfOfName = EMAIL_SENT_ON_BEHALF
             
-            # Embed banner image as inline CID attachment for Outlook Desktop
+            # Embed banner image as inline CID attachment for Outlook Desktop (Hidden from attachment bar)
             if banner_file and os.path.exists(banner_file):
                 abs_banner = os.path.abspath(banner_file)
-                att_b = mail_item.Attachments.Add(abs_banner, 1, 0, "Header Banner")
+                att_b = mail_item.Attachments.Add(abs_banner, 1, 0, "")
                 att_b.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "header_banner")
+                try:
+                    att_b.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x7FFE000B", True)
+                    att_b.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x37140003", 4)
+                    att_b.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x370E001F", "image/png")
+                except Exception:
+                    pass
             
-            # Embed threat meter image as inline CID attachment for Outlook Desktop
+            # Embed threat meter image as inline CID attachment for Outlook Desktop (Hidden from attachment bar)
             if meter_file_path and os.path.exists(meter_file_path):
                 abs_meter = os.path.abspath(meter_file_path)
-                att_m = mail_item.Attachments.Add(abs_meter, 1, 0, "Threat Meter")
+                att_m = mail_item.Attachments.Add(abs_meter, 1, 0, "")
                 att_m.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "threat_meter")
+                try:
+                    att_m.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x7FFE000B", True)
+                    att_m.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x37140003", 4)
+                    att_m.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x370E001F", "image/png")
+                except Exception:
+                    pass
+
+            # Attach Vulnerability.txt as actual visible attachment
+            if vuln_txt_path and os.path.exists(vuln_txt_path):
+                abs_vuln = os.path.abspath(vuln_txt_path)
+                att_v = mail_item.Attachments.Add(abs_vuln, 1, 1, "Vulnerability.txt")
+                try:
+                    att_v.DisplayName = "Vulnerability.txt"
+                except Exception:
+                    pass
 
             mail_item.HTMLBody = html_content
             
@@ -583,6 +605,15 @@ def create_individual_advisory(outlook, data, output_path):
     adv_email["Date"] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000")
     adv_email.set_content(f"CSU Threat Intelligence Advisory {data['advisory_no']}: {data['title']}")
     adv_email.add_alternative(html_general, subtype="html")
+    
+    # Attach Vulnerability.txt if CVE is present
+    if cve_content:
+        adv_email.add_attachment(
+            (cve_content + "\n").encode("utf-8"),
+            maintype="text",
+            subtype="plain",
+            filename="Vulnerability.txt"
+        )
     
     abs_path = os.path.abspath(msg_path)
     with open(abs_path, "wb") as f:
