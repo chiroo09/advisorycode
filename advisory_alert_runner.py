@@ -360,8 +360,8 @@ def build_advisory_html(data, meter_img_path=None, banner_img_path=None, use_cid
             except Exception:
                 pass
 
-    banner_img_html = f'<img src="{banner_src}" alt="Cyber Security Unit Threat Intelligence" style="width: 100%; max-height: 125px; display: block; border: 0;" />' if banner_src else '<div style="background-color: #001833; color: #ffffff; padding: 25px; font-size: 20px; font-weight: bold;">Cyber Security Unit - Threat Intelligence</div>'
-    meter_img_html = f'<img src="{meter_src}" alt="Threat Meter" style="width: 100%; max-width: 780px; height: auto; display: block; margin: 0 auto; border: 0;" />' if meter_src else ''
+    banner_img_html = f'<img src="{banner_src}" width="860" height="125" alt="Cyber Security Unit Threat Intelligence" style="display: block; width: 860px; max-width: 100%; height: auto; border: 0; margin: 0; padding: 0;" />' if banner_src else '<div style="background-color: #001833; color: #ffffff; padding: 25px; font-size: 20px; font-weight: bold;">Cyber Security Unit - Threat Intelligence</div>'
+    meter_img_html = f'<img src="{meter_src}" width="780" height="135" alt="Threat Meter" style="display: block; width: 100%; max-width: 780px; height: auto; margin: 0 auto; border: 0;" />' if meter_src else ''
 
     impacted_html = format_bullet_list(data["impacted_elements"])
     solution_html = format_bullet_list(data["recommendation"])
@@ -388,7 +388,7 @@ def build_advisory_html(data, meter_img_path=None, banner_img_path=None, use_cid
     <table align="center" width="860" cellpadding="0" cellspacing="0" style="max-width: 860px; width: 100%; margin: 0 auto; background-color: #ffffff; border: 1px solid #7F7F7F; border-collapse: collapse; font-family: Arial, Calibri, sans-serif;">
         <!-- Banner Image -->
         <tr>
-            <td colspan="2" style="padding: 0; background-color: #001833; line-height: 0; border-bottom: 1px solid #7F7F7F;">
+            <td colspan="2" style="padding: 0; margin: 0; background-color: #001833; line-height: 0; font-size: 0; border-bottom: 1px solid #7F7F7F;">
                 {banner_img_html}
             </td>
         </tr>
