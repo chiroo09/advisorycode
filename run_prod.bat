@@ -1,18 +1,15 @@
 @echo off
-TITLE CSU Advisory Alert - TEST MODE
-COLOR 0B
+TITLE CSU Advisory Alert - PRODUCTION RUN
+COLOR 0A
 
 echo ============================================================
-echo   CSU Threat Intelligence Alert - TEST MODE
+echo   CSU Threat Intelligence Alert - PRODUCTION RUN
 echo ============================================================
-echo.
-echo [*] Running in SAFE TEST MODE:
-echo     - auto_send = false (Draft preview only in Outlook)
-echo     - Uses settings from config.ini
 echo.
 
 set SCRIPT_DIR=%~dp0
 set PYTHON=%SCRIPT_DIR%.venv\Scripts\python.exe
+set SCRIPT=%SCRIPT_DIR%advisory_alert_runner.py
 
 if not exist "%PYTHON%" (
     echo [ERROR] Virtual environment not found. Run setup_new_system.bat first.
@@ -20,10 +17,10 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
-"%PYTHON%" -c "import advisory_alert_runner as a; a.AUTO_SEND = False; a.ENABLE_EXCEL_AUTO_REFRESH = False; a.run_cycle()"
+"%PYTHON%" "%SCRIPT%"
 
 echo.
 echo ============================================================
-echo [*] Test run completed. Check Outlook for the email draft preview.
+echo [*] Production cycle completed.
 echo ============================================================
 pause

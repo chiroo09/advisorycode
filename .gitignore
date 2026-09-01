@@ -6,17 +6,16 @@ __pycache__/
 env/
 venv/
 
-# Project Generated Output
+# Project Generated Output & Email Files
 output_msg/
 *.eml
 *.msg
+*.html
 
-# Date-scoped deduplication tracking files (auto-generated, not needed in repo)
+# Tracking files (stored inside tracking/)
+tracking/*.txt
 .processed_ids*.txt
 
 # Credentials / Secrets
 smtp_config.py
 .env
-output_test/
-test_advisory.xlsx
-.test_processed_ids*.txt

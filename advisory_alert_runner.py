@@ -101,6 +101,10 @@ def get_processed_ids(sheet_date):
 
 def mark_as_processed(row_id, sheet_date):
     tracking_file = get_tracking_file_for_date(sheet_date)
+    # Ensure the tracking directory exists (e.g. prod/tracking/ or test/tracking/)
+    tracking_dir = os.path.dirname(tracking_file)
+    if tracking_dir:
+        ensure_dir(tracking_dir)
     with open(tracking_file, "a", encoding="utf-8") as f:
         f.write(f"{row_id}\n")
 
