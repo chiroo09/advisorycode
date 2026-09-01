@@ -305,42 +305,52 @@ def generate_threat_meters_image(severity_text="Critical", out_path="threat_mete
 # =============================================================================
 def trigger_excel_macro_refresh(file_path):
     """Triggers Excel 'Refresh All' to fetch real-time SharePoint data before scanning."""
-    if not COM_AVAILABLE or not ENABLE_EXCEL_AUTO_REFRESH:
+    if not ENABLE_EXCEL_AUTO_REFRESH:
+        print("[*] Excel auto-refresh disabled in config.ini (enable_auto_refresh = false). Skipping.")
         return
-    
+    if not COM_AVAILABLE:
+        print("[*] Excel auto-refresh skipped: win32com not available on this system (New Outlook / non-COM environment).")
+        return
+
     abs_path = os.path.abspath(file_path)
     if not os.path.exists(abs_path):
+        print(f"[*] Excel auto-refresh skipped: file not found at {abs_path}")
         return
-        
+
     print(f"[*] Triggering Excel Macro / Power Query 'Refresh All' on {os.path.basename(file_path)}...")
     try:
         excel = win32com.client.Dispatch("Excel.Application")
         excel.DisplayAlerts = False
         excel.Visible = False
-        
         wb = excel.Workbooks.Open(abs_path)
         wb.RefreshAll()
         excel.CalculateUntilAsyncQueriesDone()
-        
-        print(f"[*] Waiting {AUTO_REFRESH_WAIT_SECONDS}s for real-time SharePoint synchronization...")
+        print(f"[*] Waiting {AUTO_REFRESH_WAIT_SECONDS}s for SharePoint synchronization...")
         time.sleep(AUTO_REFRESH_WAIT_SECONDS)
         wb.Save()
         wb.Close()
         excel.Quit()
-        print("[+] Excel real-time data refreshed and saved successfully.")
+        print("[+] Excel data refreshed and saved successfully.")
     except Exception as e:
-        print(f"[*] Note: Excel COM refresh skipped or not available on this host ({e}).")
+        print(f"[WARN] Excel COM refresh could not complete ({e}). Script will read existing saved data.")
 
 # =============================================================================
 # HEADER BANNER EMBEDDER (TI_BG.png with fallback & CID support)
 # =============================================================================
 def ensure_banner_file():
+    """Finds or generates the banner image. Searches in script directory AND current directory."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     possible_names = ["TI_BG.png", "TI_BG.jpg", "TI_BG.jpeg", "header.png", "banner.png", "Capgemini_banner.png"]
-    for fname in possible_names:
-        if os.path.exists(fname):
-            return fname
-            
-    fallback_file = "TI_BG.png"
+
+    # Search in script directory first (most reliable), then current working directory
+    for search_dir in [script_dir, os.getcwd()]:
+        for fname in possible_names:
+            full_path = os.path.join(search_dir, fname)
+            if os.path.exists(full_path):
+                return full_path
+
+    # Generate fallback banner using Pillow if available
+    fallback_file = os.path.join(script_dir, "TI_BG.png")
     try:
         from PIL import Image, ImageDraw
         img = Image.new("RGB", (860, 110), color="#001833")
@@ -352,6 +362,7 @@ def ensure_banner_file():
         img.save(fallback_file, "PNG")
         return fallback_file
     except Exception:
+        # No Pillow — banner section will use CSS fallback text block in HTML
         return None
 
 # =============================================================================
@@ -617,7 +628,7 @@ def create_individual_advisory(outlook, data, output_path):
             mail_item.Close(1)
             return abs_path
         except Exception as e:
-            print(f"    [!] Classic Outlook COM notice ({e}), falling back to universal email format.")
+            print(f"    [WARN] Classic Outlook COM failed ({e}). Falling back to universal MIME format (.eml)...")
     
     # 2. Universal RFC MIME email package (.msg & .eml for New Outlook, Web, and any system)
     msg_path = output_path if output_path.endswith(".msg") else output_path + ".msg"
@@ -756,9 +767,13 @@ def send_master_trigger_email(outlook, generated_files):
         f.write(trigger_html)
 
     print(f"\n[+] Master Trigger email generated with .msg attachments: {eml_path}")
+    # Open the trigger package (Windows only; safe fallback to browser on non-COM systems)
     try:
-        os.startfile(os.path.abspath(eml_path))
-        print(f"[+] Opened trigger email in Outlook: {eml_path}")
+        if sys.platform == "win32":
+            os.startfile(os.path.abspath(eml_path))
+            print(f"[+] Opened trigger email: {eml_path}")
+        else:
+            webbrowser.open(os.path.abspath(summary_path))
     except Exception:
         webbrowser.open(os.path.abspath(summary_path))
 
@@ -779,6 +794,17 @@ def run_cycle():
     print(f"  CSU Threat Intelligence Alert Automation Cycle  [{now_str}]")
     print("=" * 65)
     
+    # ── SYSTEM CAPABILITY CHECK ────────────────────────────────────────────────────
+    print(f"  {'─' * 61}")
+    print(f"  SYSTEM CAPABILITIES")
+    print(f"  {'─' * 61}")
+    print(f"  Outlook COM (Classic Outlook) : {'Available' if COM_AVAILABLE else 'Not available — using EML fallback'}")
+    print(f"  Excel COM (macro refresh)     : {'Enabled' if (COM_AVAILABLE and ENABLE_EXCEL_AUTO_REFRESH) else 'Disabled or unavailable'}")
+    print(f"  Excel workbook                : {EXCEL_FILE} {'(found)' if os.path.exists(EXCEL_FILE) else '[NOT FOUND]'}")
+    print(f"  Auto-send mode                : {'ON (sends silently)' if AUTO_SEND else 'OFF (opens preview)'}")
+    print(f"  {'─' * 61}")
+    print(f"")
+
     ensure_dir(MSG_OUTPUT_DIR)
     # NOTE: processed_ids loaded AFTER we determine latest_date below
 
@@ -794,6 +820,9 @@ def run_cycle():
         wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True, read_only=True)
     except Exception as e:
         print(f"[ERROR] Failed to load Excel workbook: {e}")
+        if EXCEL_FILE.endswith(".xlsm"):
+            print(f"[HINT] If '{EXCEL_FILE}' was saved without macros or opened/resaved on a different machine,")
+            print(f"       try setting workbook_fallback = dummy_advisory.xlsx in config.ini to test.")
         return 0
     
     if SHEET_NAME not in wb.sheetnames:
