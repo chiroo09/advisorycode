@@ -545,7 +545,12 @@ def build_advisory_html(data, meter_img_path=None, banner_img_path=None, use_cid
 # =============================================================================
 def create_individual_advisory(outlook, data, output_path):
     import re
-    subject = f"CSU Threat Intelligence Notification Advisory {data['advisory_no']} - {data['title']} ({data['severity'].upper()})"
+    # Subject pattern matching template:
+    # CSU Threat Intelligence Notification Advisory <Advisory_No> - <Title> (<SEVERITY>)
+    clean_title_sub = data['title'].strip().replace("\n", " ").replace("\r", "")
+    advisory_no_sub = data['advisory_no'].strip()
+    severity_sub = (data.get('severity') or 'Medium').strip().upper()
+    subject = f"CSU Threat Intelligence Notification Advisory {advisory_no_sub} - {clean_title_sub} ({severity_sub})"
     banner_file = ensure_banner_file()
     
     # 1. Generate threat meter PNG for this specific alert severity
@@ -975,7 +980,7 @@ def run_cycle():
         try:
             saved_file = create_individual_advisory(outlook, data, msg_path)
             generated_files.append(saved_file)
-            mark_as_processed(data["row_hash"], latest_date)  # Step 8 (Surya): Save hash with Advisory Preparation date
+            mark_as_processed(data["row_hash"], latest_date)
             processed_ids.add(data["row_hash"])
         except Exception as e:
             print(f"    [!] Error creating {data['advisory_no']}: {e}")
