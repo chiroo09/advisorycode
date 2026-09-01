@@ -17,3 +17,6 @@ output_msg/
 # Credentials / Secrets
 smtp_config.py
 .env
+output_test/
+test_advisory.xlsx
+.test_processed_ids*.txt
