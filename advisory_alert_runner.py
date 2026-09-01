@@ -625,16 +625,17 @@ def create_individual_advisory(outlook, data, output_path):
 
             mail_item.HTMLBody = html_content
             
-            # Set PR_MESSAGE_FLAGS (0x0E070003) = 1 (MSGFLAG_READ)
-            # This turns the unsent draft into a normal 'Received' email with Reply / Reply All buttons
-            try:
-                mail_item.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E070003", 1)
-            except Exception:
-                pass
-                
             abs_path = os.path.abspath(output_path)
             mail_item.SaveAs(abs_path, 3) # 3 = olMSG
-            mail_item.Close(1)
+
+            # Direct dispatch: Send or Display the advisory email itself
+            if AUTO_SEND:
+                mail_item.Send()
+                print(f"    [+] SENT directly via Outlook to {EMAIL_TO} | Subject: {subject}")
+            else:
+                mail_item.Display()
+                print(f"    [+] Opened preview in Outlook | Subject: {subject}")
+
             return abs_path
         except Exception as e:
             print(f"    [WARN] Classic Outlook COM failed ({e}). Falling back to universal MIME format (.eml)...")
@@ -668,6 +669,17 @@ def create_individual_advisory(outlook, data, output_path):
     eml_path = output_path.replace(".msg", ".eml")
     with open(eml_path, "wb") as f:
         f.write(adv_email.as_bytes())
+
+    # If AUTO_SEND is False (test mode) and not on COM, open the email preview
+    if not AUTO_SEND:
+        try:
+            if sys.platform == "win32":
+                os.startfile(eml_path)
+            else:
+                webbrowser.open(html_path)
+        except Exception:
+            webbrowser.open(html_path)
+        print(f"    [+] Opened preview: {eml_path}")
         
     return abs_path
 
@@ -985,15 +997,11 @@ def run_cycle():
         except Exception as e:
             print(f"    [!] Error creating {data['advisory_no']}: {e}")
 
-    # Step 3: Trigger master notification email with all packages attached
+    # Completion summary
     if generated_files:
         print("-" * 65)
-        print(f"[+] Successfully generated {len(generated_files)} advisory package(s).")
-        print(f"[*] Transmitting master trigger notification email to {EMAIL_TO}...")
-        send_master_trigger_email(outlook, generated_files)
-        first_file = os.path.abspath(generated_files[0])
-        print(f"[*] Opening preview: {first_file}")
-        webbrowser.open(first_file)
+        print(f"[+] Successfully processed {len(generated_files)} advisory alert email(s).")
+        print(f"[*] Packages saved in: {os.path.abspath(MSG_OUTPUT_DIR)}")
 
     return len(generated_files)
 
