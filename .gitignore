@@ -1,16 +1,19 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 .venv/
 env/
 venv/
 
-# Project Generated Output & Tracking
+# Project Generated Output
 output_msg/
-.processed_ids.txt
 *.eml
+*.msg
 
-# Credentials (if any)
+# Date-scoped deduplication tracking files (auto-generated, not needed in repo)
+.processed_ids*.txt
+
+# Credentials / Secrets
 smtp_config.py
 .env

@@ -3,6 +3,7 @@ import sys
 import time
 import hashlib
 import webbrowser
+import configparser
 from datetime import datetime
 from email.message import EmailMessage
 import openpyxl
@@ -23,56 +24,59 @@ except ImportError:
     COM_AVAILABLE = False
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION — loaded from config.ini (same folder as this script)
+# Edit config.ini to change any setting. Do NOT edit this block directly.
 # =============================================================================
-# Primary Tracker Workbook (.xlsm / .xlsx)
-# Checks for 'Advisory_Tracker.xlsm' first, falls back to 'dummy_advisory.xlsx'
-EXCEL_FILE = "Advisory_Tracker.xlsm" if os.path.exists("Advisory_Tracker.xlsm") else "dummy_advisory.xlsx"
-SHEET_NAME = "Advisory"
-MSG_OUTPUT_DIR = "output_msg"
-TRACKING_FILE = ".processed_ids.txt"
+_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+_cfg = configparser.ConfigParser(inline_comment_prefixes=("#",))
 
-# Automation Schedule: Set to 3 for 3-hour continuous check (0 = run once and exit)
-SCHEDULE_INTERVAL_HOURS = 0
+if not os.path.exists(_CONFIG_FILE):
+    print(f"[ERROR] config.ini not found at: {_CONFIG_FILE}")
+    print("        Please create config.ini alongside advisory_alert_runner.py.")
+    sys.exit(1)
 
-# Macro & Power Query Auto-Refresh before reading (Refreshes real-time SharePoint data)
-ENABLE_EXCEL_AUTO_REFRESH = True
-AUTO_REFRESH_WAIT_SECONDS = 20
+_cfg.read(_CONFIG_FILE, encoding="utf-8")
 
-# Safe Testing & Dispatch Controls:
-# - Set AUTO_SEND = False to OPEN the email on screen in Outlook for manual review
-# - Set AUTO_SEND = True to send immediately in the background
-AUTO_SEND = True
+# ── [excel] ──────────────────────────────────────────────────────────────────
+_wb_primary  = _cfg.get("excel", "workbook_file",     fallback="Advisory_Tracker.xlsm")
+_wb_fallback = _cfg.get("excel", "workbook_fallback", fallback="dummy_advisory.xlsx")
+EXCEL_FILE   = _wb_primary if os.path.exists(_wb_primary) else _wb_fallback
+SHEET_NAME   = _cfg.get("excel", "sheet_name", fallback="Advisory")
 
-# Maximum number of alerts to process per cycle (0 = unlimited, processes ALL new alerts found)
-MAX_ALERTS_PER_CYCLE = 0
+# ── [email] ──────────────────────────────────────────────────────────────────
+EMAIL_TO           = _cfg.get("email", "to",             fallback="")
+EMAIL_CC           = _cfg.get("email", "cc",             fallback="")
+EMAIL_SENT_ON_BEHALF = _cfg.get("email", "sent_on_behalf", fallback="")
 
-# ONE-TIME INITIAL BASELINE SEEDING:
-# Set to True if your Excel sheet already has hundreds of old past alerts and you ONLY
-# want to start alerting for NEW alerts added from today onwards (marks all existing as processed without sending emails).
-SEED_ALL_EXISTING = False
+# ── [behavior] ───────────────────────────────────────────────────────────────
+AUTO_SEND           = _cfg.getboolean("behavior", "auto_send",           fallback=True)
+MAX_ALERTS_PER_CYCLE = _cfg.getint("behavior", "max_alerts_per_cycle",   fallback=0)
+SEED_ALL_EXISTING   = _cfg.getboolean("behavior", "seed_all_existing",   fallback=False)
 
-# Recipient configuration for advisories and master trigger email
-EMAIL_TO = "nagireddy-gari.shinysreeja@capgemini.com"
-EMAIL_CC = "tejesh988@outlook.com"
-# Optional: Specify sender or shared mailbox name (leave empty to use default logged-in Outlook profile)
-EMAIL_SENT_ON_BEHALF = ""
+# ── [refresh] ────────────────────────────────────────────────────────────────
+ENABLE_EXCEL_AUTO_REFRESH = _cfg.getboolean("refresh", "enable_auto_refresh",       fallback=True)
+AUTO_REFRESH_WAIT_SECONDS = _cfg.getint("refresh",    "auto_refresh_wait_seconds",  fallback=20)
 
-# Excel Column Indices (1-based from tracker sheet)
-COL_TITLE = 1             # Title
-COL_TYPE = 2              # Advisory Type
-COL_ADVISORY_NO = 4       # Advisory No (e.g. TI26-090)
-COL_DATE = 5              # Advisory Preparation Date
-COL_SUMMARY = 7           # Summary
-COL_ATTACK_VECTOR = 8     # Attack Vector
-COL_IMPACT_ANALYSIS = 9   # Impact Analysis
-COL_IOCS = 10             # IOCs
-COL_RECOMMENDATION = 11   # Recommendation / Vendor Solution
-COL_REFERENCE = 12        # Reference
-COL_CVE = 13              # CVE Id
-COL_IMPACTED_ELEMENTS = 14# Impacted Elements
-COL_ATTACK_TYPE = 15      # Attack type / Impact Type
-COL_SEVERITY = 18         # Severity
+# ── [columns] — 1-based column indices in the Advisory sheet ─────────────────
+COL_TITLE            = _cfg.getint("columns", "title",             fallback=1)
+COL_TYPE             = _cfg.getint("columns", "advisory_type",     fallback=2)
+COL_ADVISORY_NO      = _cfg.getint("columns", "advisory_no",       fallback=4)
+COL_DATE             = _cfg.getint("columns", "date",              fallback=5)
+COL_SUMMARY          = _cfg.getint("columns", "summary",           fallback=7)
+COL_ATTACK_VECTOR    = _cfg.getint("columns", "attack_vector",     fallback=8)
+COL_IMPACT_ANALYSIS  = _cfg.getint("columns", "impact_analysis",   fallback=9)
+COL_IOCS             = _cfg.getint("columns", "iocs",              fallback=10)
+COL_RECOMMENDATION   = _cfg.getint("columns", "recommendation",    fallback=11)
+COL_REFERENCE        = _cfg.getint("columns", "reference",         fallback=12)
+COL_CVE              = _cfg.getint("columns", "cve",               fallback=13)
+COL_IMPACTED_ELEMENTS = _cfg.getint("columns", "impacted_elements", fallback=14)
+COL_ATTACK_TYPE      = _cfg.getint("columns", "attack_type",       fallback=15)
+COL_SEVERITY         = _cfg.getint("columns", "severity",          fallback=18)
+
+# ── [paths] ──────────────────────────────────────────────────────────────────
+MSG_OUTPUT_DIR       = _cfg.get("paths", "output_dir",            fallback="output_msg")
+TRACKING_FILE_PREFIX = _cfg.get("paths", "tracking_file_prefix",  fallback=".processed_ids")
+
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -81,15 +85,36 @@ def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def get_processed_ids():
-    if not os.path.exists(TRACKING_FILE):
+def get_tracking_file_for_date(sheet_date):
+    """Returns a tracking filename scoped to the sheet's latest Advisory Preparation Date.
+    e.g. .processed_ids_2026-08-27.txt for the Aug 27 alert batch.
+    Tracking resets automatically when the sheet's latest date advances to a new batch."""
+    date_str = sheet_date.strftime("%Y-%m-%d")
+    return f"{TRACKING_FILE_PREFIX}_{date_str}.txt"
+
+def get_processed_ids(sheet_date):
+    tracking_file = get_tracking_file_for_date(sheet_date)
+    if not os.path.exists(tracking_file):
         return set()
-    with open(TRACKING_FILE, "r", encoding="utf-8") as f:
+    with open(tracking_file, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
-def mark_as_processed(row_id):
-    with open(TRACKING_FILE, "a", encoding="utf-8") as f:
+def mark_as_processed(row_id, sheet_date):
+    tracking_file = get_tracking_file_for_date(sheet_date)
+    with open(tracking_file, "a", encoding="utf-8") as f:
         f.write(f"{row_id}\n")
+
+def parse_advisory_date(date_val):
+    """Parses Advisory Preparation Date from Excel into a date object. Returns None if unparseable."""
+    if isinstance(date_val, datetime):
+        return date_val.date()
+    if isinstance(date_val, str) and date_val.strip():
+        for fmt in ["%d-%b-%y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%d %b %Y"]:
+            try:
+                return datetime.strptime(date_val.strip(), fmt).date()
+            except Exception:
+                pass
+    return None
 
 def format_generated_datetime(date_val=None):
     """Generates exact current timestamp string matching template e.g. Aug 30th 2026, 23:06 (CET)."""
@@ -755,8 +780,8 @@ def run_cycle():
     print("=" * 65)
     
     ensure_dir(MSG_OUTPUT_DIR)
-    processed_ids = get_processed_ids()
-    
+    # NOTE: processed_ids loaded AFTER we determine latest_date below
+
     # 1. Trigger live SharePoint macro refresh
     trigger_excel_macro_refresh(EXCEL_FILE)
     
@@ -789,33 +814,70 @@ def run_cycle():
     total_scanned = 0
     total_alerts_found = 0
     
-    # Step 1: Fast scan to identify all new Alert records
+    # ── PASS 1: Scan ALL rows to find the LATEST Advisory Preparation Date ──────────────
+    # Logic: The script finds the maximum (latest) date across all Alert-type rows in the sheet.
+    # Only rows matching that latest date are considered for this run.
+    # This ensures: old historical rows are never re-processed, and tracking resets
+    # automatically whenever the analyst adds alerts with a newer preparation date.
+    # Example: Sheet has 35k rows. Dates range from Jan 2025 → Aug 27 2026.
+    #          Latest = Aug 27 2026 → only Aug 27 rows are processed.
+    latest_date = None
+    all_alert_rows = []
     for row in sheet.iter_rows(min_row=2, values_only=True):
         total_scanned += 1
         if not row or len(row) < 2:
             continue
-            
         advisory_type = safe_str(row[COL_TYPE - 1]).lower()
-        
-        # TARGET ONLY ALERTS
         if advisory_type != "alert":
             continue
-            
+        row_date = parse_advisory_date(row[COL_DATE - 1])
+        if row_date is None:
+            continue
+        all_alert_rows.append((row, row_date))
+        if latest_date is None or row_date > latest_date:
+            latest_date = row_date
+
+    if latest_date is None:
+        print("[WARN] No Alert rows with a valid Advisory Preparation Date found in sheet.")
+        wb.close()
+        return 0
+
+    tracking_file = get_tracking_file_for_date(latest_date)
+    processed_ids = get_processed_ids(latest_date)
+
+    # ── DATE SELECTION DECISION LOG ───────────────────────────────────────────────────────
+    print(f"")
+    print(f"  {'─' * 61}")
+    print(f"  DATE BATCH SELECTED FOR THIS RUN")
+    print(f"  {'─' * 61}")
+    print(f"  Latest Advisory Preparation Date : {latest_date.strftime('%d-%b-%Y')} (picked from {len(all_alert_rows)} Alert rows)")
+    print(f"  Tracking file                    : {tracking_file}")
+    print(f"  Already processed in prior runs  : {len(processed_ids)} alert(s)")
+    print(f"  Script run timestamp             : {datetime.now().strftime('%d-%b-%Y %H:%M:%S')}")
+    print(f"  {'─' * 61}")
+    print(f"")
+
+    # ── PASS 2: Filter rows matching latest_date only, then hash and deduplicate ──────────
+    for (row, row_date) in all_alert_rows:
+        if row_date != latest_date:
+            continue  # Skip all rows from older date batches
+
         total_alerts_found += 1
         row_hash = get_row_hash(row)
+
         if row_hash in processed_ids:
-            continue # Already processed in previous cycle
-            
+            continue  # Already sent in a previous run for this date batch
+
         title = safe_str(row[COL_TITLE - 1])
         if not title:
             continue
-            
+
         advisory_no = safe_str(row[COL_ADVISORY_NO - 1]) or "TI-Alert"
-        
+
         data = {
             "title": title,
             "advisory_no": advisory_no,
-            "date": format_generated_datetime(row[COL_DATE - 1]),
+            "date": format_generated_datetime(),
             "severity": safe_str(row[COL_SEVERITY - 1]) or "Medium",
             "cve": safe_str(row[COL_CVE - 1]),
             "summary": safe_str(row[COL_SUMMARY - 1]),
@@ -830,26 +892,36 @@ def run_cycle():
 
     wb.close()
     elapsed = time.time() - start_time
-    print(f"[+] Scanned {total_scanned:,} total rows in {elapsed:.2f}s.")
-    print(f"[*] Total 'Alert' rows in tracker: {total_alerts_found} | New unprocessed alerts: {len(unprocessed_alerts)}")
+    # ── SCAN SUMMARY ──────────────────────────────────────────────────────────────────────
+    print(f"  {'─' * 61}")
+    print(f"  SCAN SUMMARY")
+    print(f"  {'─' * 61}")
+    print(f"  Total rows scanned               : {total_scanned:,}")
+    print(f"  Alert rows on {latest_date.strftime('%d-%b-%Y')}         : {total_alerts_found}")
+    print(f"  Already processed (skipped)      : {len(processed_ids)}")
+    print(f"  New alerts to send               : {len(unprocessed_alerts)}")
+    print(f"  Scan duration                    : {elapsed:.2f}s")
+    print(f"  {'─' * 61}")
+    print(f"")
 
     if not unprocessed_alerts:
-        print("\n[*] All alerts are up-to-date. No new emails to send.")
+        print("[OK] All alerts for this date batch are up-to-date. No new emails to send.")
         return 0
 
-    # Step 1.5: Handle One-Time Baseline Seeding (Skip old history)
+    # Baseline Seeding: marks all existing alerts as seen without sending emails.
+    # Use once when first deploying on a sheet that already has historical data.
     if SEED_ALL_EXISTING:
-        print(f"\n[!] SEED MODE ACTIVE: Marking all {len(unprocessed_alerts)} existing alerts as processed...")
+        print(f"\n[!] SEED MODE ACTIVE: Marking all {len(unprocessed_alerts)} existing alerts as processed without sending emails...")
         for data in unprocessed_alerts:
-            mark_as_processed(data["row_hash"])
-        print(f"[+] All {len(unprocessed_alerts)} historical alerts recorded in {TRACKING_FILE}.")
-        print("[*] Baseline seeding complete! Now set SEED_ALL_EXISTING = False to begin live alerting.")
+            mark_as_processed(data["row_hash"], latest_date)
+        print(f"[+] Seeded {len(unprocessed_alerts)} alerts into: {get_tracking_file_for_date(latest_date)}")
+        print("[*] Baseline seeding complete. Set SEED_ALL_EXISTING = False to begin live alerting.")
         return 0
 
-    # Step 1.6: Apply Batch Limit (Prevents attaching 3k files to one email)
+    # Batch limit guard: prevents sending hundreds of emails in one run on first deployment.
     if MAX_ALERTS_PER_CYCLE > 0 and len(unprocessed_alerts) > MAX_ALERTS_PER_CYCLE:
         print(f"[*] Batch Limit Active: Processing first {MAX_ALERTS_PER_CYCLE} of {len(unprocessed_alerts)} new alerts.")
-        print(f"    (Remaining {len(unprocessed_alerts) - MAX_ALERTS_PER_CYCLE} alerts will automatically process in subsequent cycles).")
+        print(f"    Remaining {len(unprocessed_alerts) - MAX_ALERTS_PER_CYCLE} alert(s) will process in subsequent runs.")
         unprocessed_alerts = unprocessed_alerts[:MAX_ALERTS_PER_CYCLE]
 
     # Step 2: Process each new alert with a visual progress bar
@@ -870,7 +942,7 @@ def run_cycle():
         try:
             saved_file = create_individual_advisory(outlook, data, msg_path)
             generated_files.append(saved_file)
-            mark_as_processed(data["row_hash"])
+            mark_as_processed(data["row_hash"], latest_date)  # Step 8 (Surya): Save hash with Advisory Preparation date
             processed_ids.add(data["row_hash"])
         except Exception as e:
             print(f"    [!] Error creating {data['advisory_no']}: {e}")
@@ -888,25 +960,14 @@ def run_cycle():
     return len(generated_files)
 
 def main():
-    if SCHEDULE_INTERVAL_HOURS > 0:
-        print(f"[*] Starting continuous automation engine (recurring every {SCHEDULE_INTERVAL_HOURS} hour(s))...")
-        print("[*] Press Ctrl+C at any time to stop.\n")
-        try:
-            while True:
-                run_cycle()
-                next_check = datetime.fromtimestamp(time.time() + SCHEDULE_INTERVAL_HOURS * 3600).strftime("%H:%M:%S")
-                print(f"\n" + "=" * 65)
-                print(f"[*] Cycle finished. Next automated check at: {next_check} (sleeping {SCHEDULE_INTERVAL_HOURS}h)")
-                print(f"[*] Keep this window open or minimized to run continuously.")
-                print("=" * 65 + "\n")
-                time.sleep(SCHEDULE_INTERVAL_HOURS * 3600)
-        except KeyboardInterrupt:
-            print("\n[*] Automation scheduler stopped by user.")
-    else:
-        run_cycle()
-        print("\n" + "=" * 65)
-        print("  Automation cycle completed.")
-        print("=" * 65)
+    # No internal scheduler loop — scheduling is handled by Windows Task Scheduler.
+    # Script runs once, processes all new alerts for the latest date batch, then exits cleanly.
+    # Tracking is date-scoped: .processed_ids_YYYY-MM-DD.txt resets automatically per date batch.
+    run_cycle()
+    print("\n" + "=" * 65)
+    print("  Automation cycle completed. Exiting.")
+    print("  (Windows Task Scheduler will invoke the next run on schedule.)")
+    print("=" * 65)
 
 if __name__ == "__main__":
     main()
